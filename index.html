@@ -1,372 +1,140 @@
-<!DOCTYPE html>
-<html lang="hu">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#1e40af">
-  <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="apple-touch-icon" href="/icons/ikon-192.png">
-  <title>CRC PLAY</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    html, body { height: 100%; background: #0f172a; color: #fff; font-family: system-ui, -apple-system, sans-serif; touch-action: manipulation; overflow: hidden; }
-    #game { width: 100%; height: 100%; display: flex; flex-direction: column; }
-    canvas { width: 100%; height: 100%; flex: 1; background: #1a202c; display: block; touch-action: none; }
-    .ui { padding: 6px 8px; background: #1e293b; display: flex; flex-wrap: wrap; gap: 5px; max-height: 35vh; overflow-y: auto; }
-    button { padding: 10px 12px; background: #334155; color: white; border: none; border-radius: 8px; font-size: 13px; min-height: 40px; }
-    button:active { transform: scale(0.97); }
-    button.active { background: #1e40af; }
-    .log { font-size: 11px; opacity: 0.85; padding: 4px 8px; max-height: 50px; overflow: hidden; background: #0f172a; }
-    .menu { text-align: center; padding: 20px 16px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; }
-    .menu button { font-size: 18px; padding: 16px 32px; margin: 8px; min-width: 180px; }
-    .exit-btn { position: absolute; top: 8px; right: 8px; background: #b91c1c; z-index: 10; padding: 8px 12px; font-size: 13px; }
-    #end { position: relative; }
-    @media (max-width: 480px) {
-      button { font-size: 12px; padding: 8px 10px; }
-      .menu button { font-size: 16px; padding: 14px 24px; }
-    }
-    @media (min-width: 900px) {
-      .ui { justify-content: center; }
-    }
-  </style>
-</head>
-<body>
-  <div id="game">
-    <div id="menu" class="menu">
-      <h1 style="font-size:2.2rem;margin-bottom:8px">CRC PLAY</h1>
-      <p style="margin-bottom:20px;opacity:0.8">Magyar Honvédség + GIDRAN</p>
-      <button onclick="start('oszlató')">Oszlató (MH)</button>
-      <button onclick="start('tüntető')" style="background:#b91c1c">Tüntető</button>
-      <button onclick="refreshLeaderboard()" style="background:#0f766e;margin-top:16px">Ranglista frissítése</button>
-      <div id="menuBoard" style="margin-top:16px;max-height:30vh;overflow-y:auto;width:100%;max-width:400px"></div>
-    </div>
-
-    <canvas id="c" width="800" height="400" style="display:none"></canvas>
-    <button id="exitBtn" class="exit-btn" style="display:none" onclick="exitGame()">Kilépés</button>
-    <div id="controls" class="ui" style="display:none"></div>
-    <div id="log" class="log" style="display:none"></div>
-
-    <div id="end" class="menu" style="display:none">
-      <h2 id="scoreText"></h2>
-      <input id="name" placeholder="Név" style="padding:12px;margin:10px;border-radius:6px;border:none;width:80%;max-width:240px">
-      <button onclick="save()">Mentés ranglistára</button>
-      <div id="board" style="margin-top:12px"></div>
-      <button onclick="backToMenu()" style="margin-top:10px">Vissza a menübe</button>
-    </div>
-  </div>
-
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
-  <script src="/firebase-config.js"></script>
-  <script>
-    let side, formation = 'vonal', command = '', score = 0, running = false;
-    let squad = [], protesters = [], molotovs = [], gidran = {x:30,y:200,health:300};
-    let gasActive = false, waterActive = false, logs = [];
-    const canvas = document.getElementById('c');
-    const ctx = canvas.getContext('2d');
-
-    // Jobb grafikák
-    const images = {};
-    function loadImages() {
-      const list = ['soldier_shield', 'gidran'];
-      list.forEach(name => {
-        const img = new Image();
-        img.src = '/images/' + name + '.jpg';
-        images[name] = img;
-      });
-    }
-    loadImages();
-
-    function resizeCanvas() {
-      // Egyszerű, megbízható méret
-      const parent = canvas.parentElement;
-      const available = parent.clientHeight - 180; // hely a gomboknak
-      canvas.style.height = Math.max(220, available) + 'px';
-      canvas.width = 800;
-      canvas.height = 400;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-    }
-    window.addEventListener('resize', () => { if (running) resizeCanvas(); });
-
-    function log(msg) {
-      logs.unshift(msg);
-      const el = document.getElementById('log');
-      if (el) el.innerHTML = logs.slice(0, 5).join('<br>');
-    }
-
-    function start(s) {
-      side = s;
-      document.getElementById('menu').style.display = 'none';
-      document.getElementById('end').style.display = 'none';
-      canvas.style.display = 'block';
-      document.getElementById('controls').style.display = 'flex';
-      document.getElementById('log').style.display = 'block';
-      document.getElementById('exitBtn').style.display = 'block';
-      setTimeout(() => {
-        resizeCanvas();
-        init();
-        running = true;
-        loop();
-      }, 100);
-    }
-
-    function exitGame() {
-      if (!confirm('Biztosan kilépsz a játékból?')) return;
-      running = false;
-      backToMenu();
-    }
-
-    function backToMenu() {
-      running = false;
-      document.getElementById('menu').style.display = 'flex';
-      canvas.style.display = 'none';
-      document.getElementById('controls').style.display = 'none';
-      document.getElementById('log').style.display = 'none';
-      document.getElementById('exitBtn').style.display = 'none';
-      document.getElementById('end').style.display = 'none';
-      refreshLeaderboard();
-    }
-
-    function init() {
-      gidran = {x: 30, y: 180, health: 300};
-      squad = [
-        {role:'PK',x:160,y:220,h:100,shield:true,mask:false},
-        {role:'SNIPER',x:210,y:220,h:100,shield:false,mask:false},
-        {role:'MG',x:250,y:220,h:100,shield:false,mask:false},
-        {role:'MG',x:290,y:220,h:100,shield:false,mask:false},
-        {role:'MG',x:330,y:220,h:100,shield:false,mask:false},
-        {role:'MG',x:370,y:220,h:100,shield:false,mask:false},
-        {role:'SHOTGUN',x:410,y:220,h:100,shield:false,mask:false},
-        {role:'SHOTGUN',x:450,y:220,h:100,shield:false,mask:false},
-        {role:'EXT',x:490,y:220,h:100,shield:true,mask:false},
-        {role:'EXT',x:530,y:220,h:100,shield:true,mask:false}
-      ];
-      protesters = Array.from({length:12}, (_,i) => ({x:620 + i*22, y:230, h:60}));
-      molotovs = [];
-      score = 0;
-      gasActive = false;
-      waterActive = false;
-      buildControls();
-      applyFormation();
-    }
-
-    function applyFormation() {
-      const base = gidran.x + 140;
-      squad.forEach((s,i) => {
-        if (formation === 'doboz') { s.x = base + (i%5)*38; s.y = 200 + Math.floor(i/5)*30; }
-        else if (formation === 'ék') { s.x = base + i*26; s.y = 220 - Math.abs(i-4.5)*5; }
-        else if (formation === 'oszlop') { s.x = base + i*16; s.y = 220; }
-        else if (formation === 'nyitott') { s.x = base + i*42; s.y = 220; }
-        else { s.x = base + i*34; s.y = 220; }
-      });
-    }
-
-    function buildControls() {
-      const forms = ['doboz','ék','oszlop','vonal','nyitott','zárt'];
-      const cmds = ['állj','előre','pajzsot fel','pajzsot le','gázálarcot fel','gázálarcot le','fegyver!','koktél','jármű','vízágyú'];
-      let html = forms.map(f => `<button onclick="setForm('${f}')">${f}</button>`).join('');
-      html += '<br style="width:100%">' + cmds.map(c => `<button onclick="setCmd('${c}')">${c}</button>`).join('');
-      document.getElementById('controls').innerHTML = html;
-    }
-
-    function setForm(f) { formation = f; applyFormation(); log('Alakzat: ' + f); }
-    function setCmd(c) { command = c; log('Parancs: ' + c); }
-
-    function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // Háttér – mindig látható
-      ctx.fillStyle = '#1e293b';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#334155';
-      ctx.fillRect(0, 280, canvas.width, 120);
-
-      // GIDRAN – mindig rajzolódik
-      ctx.fillStyle = '#4d7c0f';
-      ctx.fillRect(gidran.x, gidran.y, 130, 60);
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 13px sans-serif';
-      ctx.fillText('GIDRAN', gidran.x + 35, gidran.y + 35);
-
-      if (waterActive) {
-        ctx.strokeStyle = 'rgba(56,189,248,0.7)';
-        ctx.lineWidth = 6;
-        ctx.beginPath();
-        ctx.moveTo(gidran.x + 120, gidran.y + 20);
-        ctx.lineTo(gidran.x + 240, gidran.y);
-        ctx.stroke();
-      }
-
-      // Katonák – mindig láthatók
-      squad.forEach(s => {
-        if (s.h <= 0) return;
-        ctx.fillStyle = s.role === 'EXT' ? '#dc2626' : '#2563eb';
-        ctx.fillRect(s.x, s.y, 32, 60);
-        if (s.shield) {
-          ctx.fillStyle = 'rgba(191,219,254,0.7)';
-          ctx.fillRect(s.x - 10, s.y - 5, 14, 65);
-        }
-        if (s.mask) {
-          ctx.fillStyle = 'rgba(0,0,0,0.5)';
-          ctx.fillRect(s.x + 6, s.y + 5, 18, 14);
-        }
-        // Health
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(s.x, s.y - 7, 32, 3);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(s.x, s.y - 7, 32 * (s.h / 100), 3);
-      });
-
-      // Tüntetők
-      protesters.forEach(p => {
-        if (p.h <= 0) return;
-        ctx.fillStyle = '#b91c1c';
-        ctx.fillRect(p.x, p.y, 24, 50);
-      });
-
-      // Molotovok
-      molotovs.forEach(m => {
-        ctx.fillStyle = '#f97316';
-        ctx.beginPath();
-        ctx.arc(m.x, m.y, 5, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      // Felirat
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 15px sans-serif';
-      ctx.fillText('CRC PLAY  |  ' + formation.toUpperCase() + '  |  ' + Math.floor(score) + ' pont', 15, 25);
-      if (gasActive) ctx.fillText('GÁZÁLARC FEL', 15, 48);
-      if (waterActive) ctx.fillText('VÍZÁGYÚ', 15, 68);
-    }
-
-    function update() {
-      if (command === 'előre') { squad.forEach(s => s.x += 0.5); gidran.x += 0.4; }
-      if (command === 'jármű') { gidran.x += 0.6; }
-      if (command === 'vízágyú') { waterActive = !waterActive; command = ''; }
-      if (command === 'pajzsot fel') squad.forEach(s => s.shield = true);
-      if (command === 'pajzsot le') squad.forEach(s => s.shield = false);
-      if (command === 'gázálarcot fel') { squad.forEach(s => s.mask = true); gasActive = true; }
-      if (command === 'gázálarcot le') { squad.forEach(s => s.mask = false); gasActive = false; }
-      if (command === 'koktél') {
-        squad.forEach(s => s.h -= s.shield ? 0.3 : 1.2);
-        log('Koktél! Pajzs + oltás');
-        command = '';
-      }
-
-      if (waterActive) {
-        protesters.forEach(p => { if (p.h > 0 && p.x < gidran.x + 270) { p.h -= 0.5; p.x += 0.6; } });
-      }
-
-      protesters.forEach(p => {
-        if (p.h <= 0) return;
-        p.x -= 0.2;
-        if (Math.random() < 0.006) molotovs.push({x: p.x, y: p.y + 15, vx: -2.2, vy: -1.2});
-      });
-
-      molotovs.forEach(m => { m.x += m.vx; m.y += m.vy; m.vy += 0.06; });
-      molotovs = molotovs.filter(m => m.y < 340 && m.x > 0);
-
-      squad.forEach(s => {
-        if (s.h <= 0) return;
-        protesters.forEach(p => {
-          if (p.h > 0 && Math.abs(s.x - p.x) < 30) {
-            p.h -= (s.role === 'MG' || s.role === 'SHOTGUN') ? 0.7 : 0.25;
-            s.h -= 0.15;
-          }
-        });
-        molotovs.forEach(m => {
-          if (Math.abs(m.x - s.x) < 16 && Math.abs(m.y - s.y) < 30) {
-            s.h -= s.shield ? 0.4 : 1.6;
-            m.y = 999;
-          }
-        });
-      });
-
-      const as = squad.filter(s => s.h > 0).length;
-      const ap = protesters.filter(p => p.h > 0).length;
-      score = (12 - ap) * 12 + as * 3;
-      if (as === 0 || ap === 0) endGame();
-    }
-
-    function loop() {
-      if (!running) return;
-      update();
-      draw();
-      requestAnimationFrame(loop);
-    }
-
-    function endGame() {
-      running = false;
-      document.getElementById('exitBtn').style.display = 'none';
-      document.getElementById('scoreText').textContent = 'Vége! Pont: ' + Math.floor(score);
-      document.getElementById('end').style.display = 'flex';
-      loadBoard('board');
-    }
-
-    function firebaseReady() {
-      return window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey && window.FIREBASE_CONFIG.apiKey !== 'YOUR_API_KEY';
-    }
-
-    async function save() {
-      const name = document.getElementById('name').value.trim();
-      if (!name) { alert('Adj meg egy nevet!'); return; }
-      if (!firebaseReady()) { alert('Firebase config nincs beállítva a firebase-config.js fájlban.'); return; }
-      try {
-        if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
-        const db = firebase.firestore();
-        await db.collection('scores').add({
-          name,
-          score: Math.floor(score),
-          side,
-          timestamp: firebase.firestore.FieldValue.serverTimestamp()
-        });
-        alert('Mentve!');
-        loadBoard('board');
-      } catch (e) {
-        alert('Mentési hiba: ' + e.message + '\nEllenőrizd a Firestore szabályokat.');
-      }
-    }
-
-    async function loadBoard(targetId) {
-      const el = document.getElementById(targetId);
-      if (!el) return;
-      if (!firebaseReady()) {
-        el.innerHTML = '<p style="opacity:0.6;font-size:13px">Firebase nincs beállítva</p>';
-        return;
-      }
-      try {
-        if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
-        const db = firebase.firestore();
-        const snap = await db.collection('scores').orderBy('score', 'desc').limit(10).get();
-        if (snap.empty) {
-          el.innerHTML = '<p style="opacity:0.6">Még nincs eredmény</p>';
-          return;
-        }
-        let html = '<ol style="text-align:left;display:inline-block;font-size:14px">';
-        snap.forEach(d => {
-          const e = d.data();
-          html += `<li>${e.name} — ${e.score} (${e.side || ''})</li>`;
-        });
-        html += '</ol>';
-        el.innerHTML = html;
-      } catch (e) {
-        el.innerHTML = '<p style="color:#f87171;font-size:13px">Ranglista hiba: ' + e.message + '</p>';
-      }
-    }
-
-    function refreshLeaderboard() {
-      loadBoard('menuBoard');
-    }
-
-    // Initial load
-    setTimeout(refreshLeaderboard, 500);
-
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
-    }
-  </script>
-</body>
-</html>
+<!doctype html>
+<html lang="hu"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#04193b"><meta name="description" content="CRC PLAY – oldalnézetes tömegoszlatás és lázadás szimuláció."><link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"><link rel="icon" href="/icons/ikon-192.png"><title>CRC PLAY</title>
+<style>
+:root{color-scheme:dark;--navy:#04193b;--ink:#0a1322;--mut:#9aa8ba}
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);color:#eef2f7;font-family:"Arial Narrow","Roboto Condensed",system-ui,sans-serif}
+button{font:inherit;color:inherit;cursor:pointer;border:0}
+.screen{display:none;height:100dvh}.screen.on{display:flex}
+#home{align-items:center;justify-content:center;padding:18px;background:radial-gradient(ellipse at 50% 0,#12315f,var(--ink) 70%)}
+.hw{width:min(1000px,100%);height:min(640px,94dvh);display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr;gap:16px}
+.bd{grid-column:1/3;display:flex;align-items:center;gap:12px}.bd img{width:46px;height:46px;border-radius:10px}.bd b{font-size:22px;letter-spacing:.14em}.bd span{color:var(--mut);font-size:14px}
+.pn{position:relative;overflow:hidden;text-align:left;padding:24px;background:linear-gradient(180deg,#0f2447,#08111f);border-top:6px solid var(--c);border-radius:4px}
+.pn:hover{background:linear-gradient(180deg,#16356a,#0a1527)}
+.pn h2{font-size:clamp(30px,5vw,56px);margin:0 0 10px;line-height:.95}.pn p{max-width:290px;color:#b9c5d6;line-height:1.45;margin:0;font:15px/1.45 system-ui,sans-serif}
+.pn img{position:absolute;right:5%;bottom:0;height:76%;filter:drop-shadow(0 10px 18px #000b)}
+#game{flex-direction:column}
+.tb{display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--navy)}
+.tb .bk{background:#ffffff14;width:36px;height:36px;border-radius:4px;font-size:18px}
+.tb .tm{font-size:22px;font-weight:700;min-width:62px;text-align:center}
+.bars{flex:1;display:grid;gap:5px;font-size:12px;color:#c9d4e2}.bars div{display:flex;align-items:center;gap:8px}.bars em{font-style:normal;min-width:128px;white-space:nowrap}
+.tr{flex:1;height:8px;background:#ffffff1a}.tr i{display:block;height:100%;transition:width .25s}
+#bs{background:#7d9a55}#bc{background:#4f8fd8}#bf{background:#e0a03c}
+.stg{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#05080e}
+canvas{width:min(100%,calc((100dvh - 168px)*1.7857));aspect-ratio:1000/560;display:block;touch-action:manipulation}
+.ct{display:flex;gap:6px;padding:8px 10px calc(8px + env(safe-area-inset-bottom));background:var(--navy)}
+.ab{flex:1;min-width:0;position:relative;overflow:hidden;padding:13px 4px;background:#13294a;border-bottom:4px solid var(--k,#5d7596);font-weight:700;font-size:clamp(12px,2.9vw,16px)}
+.ab i{position:absolute;inset:0;background:#000b;transform-origin:left;transform:scaleX(var(--p,0))}.ab b{position:relative}
+#end{position:fixed;inset:0;display:none;place-items:center;background:#000c;padding:20px}#end.on{display:grid}
+.rs{width:min(420px,100%);padding:26px;background:#0d1f3a;border-top:6px solid var(--k,#7d9a55)}.rs h2{margin:0 0 8px;font-size:34px}.rs p{margin:0 0 14px;color:#b9c5d6;font:15px/1.5 system-ui,sans-serif}.rs strong{font-size:26px;display:block;margin-bottom:16px}
+.rs button{padding:12px 18px;background:#1b3a69;margin-right:8px;font-weight:700}
+@media(max-width:700px){.hw{grid-template-columns:1fr;grid-template-rows:auto 1fr 1fr}.bd{grid-column:1}.pn img{height:88%}.bars em{min-width:104px;font-size:11px}}
+</style></head><body>
+<main>
+<section id="home" class="screen on"><div class="hw">
+<div class="bd"><img src="/icons/apple-touch-icon.png" alt=""><b>CRC PLAY</b><span>Tömegoszlatás, oldalnézetből</span></div>
+<button class="pn" style="--c:#7d9a55" onclick="G.start('mh')"><h2>Oszlató<br>(MH)</h2><p>Vezényeld a szakaszt: alakzat, pajzs, könnygáz, vízágyú és a GIDRAN. Szórd szét a tömeget.</p><img src="/images/mh.png" alt=""></button>
+<button class="pn" style="--c:#4f8fd8" onclick="G.start('cr')"><h2>Tüntető</h2><p>Dobálj, gyújts, építs barikádot és rohamozz, amíg a szakasz meg nem fut.</p><img src="/images/tun0.png" alt=""></button>
+</div></section>
+<section id="game" class="screen">
+<div class="tb"><button class="bk" aria-label="Főmenü" onclick="G.home()">↩</button><div class="tm" id="tm">2:30</div><div class="bars"><div><em id="ls">Szakasz</em><span class="tr"><i id="bs"></i></span></div><div><em id="lc">Tömeg</em><span class="tr"><i id="bc"></i></span></div><div><em id="lf">Fáradtság</em><span class="tr"><i id="bf"></i></span></div></div></div>
+<div class="stg"><canvas id="c" aria-label="Utcai jelenet"></canvas></div>
+<div class="ct" id="ct"></div>
+</section>
+<div id="end"><div class="rs" id="rs"><h2 id="rt"></h2><p id="rp"></p><strong id="rv"></strong><button onclick="G.start(G.side())">Újra</button><button onclick="G.home()">Főmenü</button></div></div>
+</main>
+<script>
+const G=(()=>{'use strict';
+const $=s=>document.querySelector(s),R=(a,b)=>a+Math.random()*(b-a),cl=(n,a,b)=>Math.max(a,Math.min(b,n));
+const cv=$('#c'),X=cv.getContext('2d'),W=1000,H=560,D=Math.min(devicePixelRatio||1,2);cv.width=W*D;cv.height=H*D;X.setTransform(D,0,0,D,0,0);
+const IM={};['mh','mhs','tun0','tun1','tun2','gidran'].forEach(k=>{const i=new Image();i.src='/images/'+k+'.png';IM[k]=i});
+const FM={line:{n:'Vonal',pu:1,dm:1},wedge:{n:'Ék',pu:1.4,dm:1.15},box:{n:'Doboz',pu:.8,dm:.55}},FK=['line','wedge','box'];
+const CD={shield:8,gas:7,roh:10,rock:.5,molo:5,barr:10,surge:20,water:0};
+const BT={mh:[['adv','',' #7d9a55'],['form','','#7d9a55'],['shield','Pajzs','#7d9a55'],['gas','Könnygáz','#b8c79a'],['water','Vízágyú','#4f8fd8'],['roh','Roham','#c8202f']],cr:[['rock','Kő','#9aa0a6'],['molo','Molotov','#ff9a3c'],['barr','Barikád','#8a6a45'],['surge','Roham','#c8202f']]};
+let fa=0,rs=4,rv=0,sp=0,rp=0,am={},fk=1,side,S,C,PJ,GS,FR,BR,PT,fx,adv,form,sh,wj,t,aim,aimT,cd,wat,wind,over,on,last,surge,BG,tt=0;const N0=18,N1=44,TL=180;
+const sg=k=>{try{return+localStorage.getItem(k)||0}catch{return 0}},ss=(k,v)=>{try{localStorage.setItem(k,v)}catch{}};
+function mkBG(){BG=document.createElement('canvas');BG.width=W;BG.height=H;const g=BG.getContext('2d');
+ let q=g.createLinearGradient(0,0,0,400);q.addColorStop(0,'#0e1a2e');q.addColorStop(.55,'#4a3a46');q.addColorStop(1,'#b0714f');g.fillStyle=q;g.fillRect(0,0,W,H);
+ [[0,170,120,230],[110,120,150,280],[250,185,110,215],[350,95,170,305],[510,160,130,240],[630,110,160,290],[780,175,100,225],[870,130,130,270]].forEach(([x,y,w,h])=>{g.fillStyle='#1d2733';g.fillRect(x,y,w,h);for(let yy=y+14;yy<y+h-30;yy+=26)for(let xx=x+10;xx<x+w-12;xx+=22){g.fillStyle=Math.random()<.22?'#d9a35f':'#0f1824';g.fillRect(xx,yy,9,13)}});
+ q=g.createLinearGradient(0,400,0,H);q.addColorStop(0,'#3a3d40');q.addColorStop(1,'#16191c');g.fillStyle=q;g.fillRect(0,400,W,160);g.fillStyle='#55575a';g.fillRect(0,396,W,10);g.fillStyle='#ffffff18';for(let x=-20;x<W;x+=120)g.fillRect(x,532,70,5);
+ [140,470,800].forEach(x=>{g.fillStyle='#262b31';g.fillRect(x,300,5,100);g.fillRect(x-14,298,24,5);const r=g.createRadialGradient(x-4,306,2,x-4,306,60);r.addColorStop(0,'rgba(255,200,120,.55)');r.addColorStop(1,'rgba(255,200,120,0)');g.fillStyle=r;g.fillRect(x-64,250,128,120)})}
+const act_=a=>a.filter(o=>o.st===0),ctr=()=>{const a=act_(C).sort((p,q)=>p.x-q.x).slice(0,14);return a.length?a.reduce((s,o)=>s+o.x,0)/a.length:fx+160};
+function start(sd){side=sd;S=[];C=[];PJ=[];GS=[];FR=[];BR=[];PT=[];fx=300;adv=false;form='line';sh=0;wj={t:0,x:600};t=0;fa=0;rs=4;rv=40;sp=6;rp=22;am={gas:6,molo:5,barr:3,rock:60};aim=650;aimT=0;wat=100;wind=8;over=false;on=true;surge=0;
+ cd={aiM:20,aiB:18,aiS:24,aiG:5,aiW:9,aiR:6,aiH:7};Object.keys(CD).forEach(k=>cd[k]=0);
+ for(let i=0;i<N0;i++)S.push({x:190-(i/9|0)*40,y:428+(i%9)*8.5,mor:100,hp:100,v:i%3?'mh':'mhs',st:0,dn:0,sd:100,sw:0});
+ for(let i=0;i<N1;i++){const y=424+R(0,76);C.push({x:600+R(0,330),y,ly:y,mor:100,hp:100,v:i%3,st:0,dn:0,sp:Math.random(),tt:R(1,5)})}
+ if(!BG)mkBG();const b=BT[sd];$('#ct').innerHTML=b.map(([k,l,c])=>`<button class="ab" data-k="${k}" style="--k:${c.trim()}"><i></i><b>${l}</b></button>`).join('');
+ document.querySelectorAll('.ab').forEach(e=>e.onclick=()=>act(e.dataset.k));$('#ls').textContent='Szakasz';$('#lc').textContent='Tömeg';
+ $('#home').classList.remove('on');$('#game').classList.add('on');$('#end').classList.remove('on');last=performance.now()}
+function home(){on=false;$('#game').classList.remove('on');$('#end').classList.remove('on');$('#home').classList.add('on')}
+function thr(x,y,tx,ty,type,h0){const T=.55+Math.abs(tx-x)/850;PJ.push({x,y,h:h0,vx:(tx-x)/T,vy:(ty-y)/T,vh:(260*T*T-h0)/T,type,a:0})}
+function gas(tx){if(am.gas<1)return;am.gas--;thr(fx,462,cl(tx,fx+80,960),462+R(-20,20),'gas',90)}
+function molo(tx){const a=act_(C);if(!a.length||am.molo<1)return;am.molo--;const c=a[Math.random()*a.length|0];thr(c.x,c.y,tx,448+R(0,40),'molo',80)}
+function barr(tx){if(am.barr<1)return;am.barr--;const x=cl(tx,fx+90,940);BR.push({x,y:470,hp:130,m:130})}
+function rock(tx){const a=act_(C),s=act_(S).sort((p,q)=>Math.abs(p.x-tx)-Math.abs(q.x-tx))[0];if(!a.length||!s||am.rock<1)return;am.rock--;const c=a[Math.random()*a.length|0];thr(c.x,c.y,s.x+R(-12,12),s.y+R(-6,6),'rock',70)}
+function roham(){fa=Math.min(100,fa+20);C.forEach(c=>{if(c.st<2&&c.x-fx<190){c.mor-=22;c.x+=60*FM[form].pu}});S.forEach(s=>{if(s.st<2)s.mor-=3});fx+=30}
+function aimX(){if(aimT>0)return aim;return side==='mh'?ctr():fx}
+function act(k){if(!on||over)return;if(k==='adv'){adv=!adv;return}if(k==='form'){form=FK[(FK.indexOf(form)+1)%3];return}
+ if(cd[k]>0||(k in am&&am[k]<1)||((k==='roh'||k==='shield')&&fa>90))return;const ax=aimX();
+ if(k==='shield')sh=3.6;else if(k==='gas')gas(ax);else if(k==='water'){if(wat<20)return;wj.t=1.8;wj.x=ax}else if(k==='roh')roham();
+ else if(k==='rock')rock(ax);else if(k==='molo')molo(ax);else if(k==='barr')barr(ax);else if(k==='surge')surge=4;cd[k]=CD[k]}
+function ai(){if(side==='mh'){const f=act_(S);if(f.length){if(cd.aiM<=0&&t>18){molo(f[Math.random()*f.length|0].x);cd.aiM=R(14,22)}
+  if(cd.aiB<=0&&t>16&&!BR.some(b=>b.hp>0)){barr(fx+R(130,210));cd.aiB=R(24,36)}if(cd.aiS<=0&&t>20){surge=4;cd.aiS=R(22,32)}}}
+ else{adv=adv?fa<85:fa<35;const cx=ctr();if(cd.aiG<=0){gas(cx);cd.aiG=R(8,12)}if(cd.aiW<=0&&wat>40){wj.t=1.8;wj.x=cx;cd.aiW=R(10,14)}
+  if(cd.aiR<=0&&fa<90&&C.some(c=>c.st===0&&c.x-fx<100)){roham();cd.aiR=12}if(cd.aiH<=0&&fa<85){sh=3.5;cd.aiH=R(9,14)}}}
+function land(p){if(p.type==='rock'){S.forEach(s=>{if(s.st===0&&Math.abs(s.x-p.x)<22&&Math.abs(s.y-p.y)<16){const k=(sh>0?.3:1)*FM[form].dm*fk*shd(s,16);s.hp-=5*k;s.mor-=2.4*k}})}
+ else if(p.type==='molo'){FR.push({x:p.x,y:p.y,t:7,r:58});S.forEach(s=>{if(s.st===0&&Math.abs(s.x-p.x)<40){const q=shd(s,45);s.hp-=6*q;s.mor-=8*q}})}else GS.push({x:p.x,y:p.y,t:11,r:26})}
+function shd(s,d){if(s.v==='mhs'&&s.sw<=0&&s.sd>0){s.sd-=d;if(s.sd<=0){s.sd=0;s.v='mh';s.sw=5;for(let i=0;i<10;i++)PT.push({x:s.x+14,y:s.y-60+R(-20,20),vx:R(-30,60),vy:R(-60,10),l:1.2,m:1.2,c:'190,220,240',r:2.5})}return .25}return 1}
+function panic(a,arr){arr.forEach(o=>{if(o.st===0&&Math.abs(o.x-a.x)<70)o.mor-=4})}
+function up(dt){t+=dt;fk=1+Math.max(0,fa-60)/80;wind=cl(wind+R(-1,1)*dt*10,-8,26);for(const k in cd)cd[k]=Math.max(0,cd[k]-dt);wat=Math.min(100,wat+9*dt);surge=Math.max(0,surge-dt);sh=Math.max(0,sh-dt);aimT=Math.max(0,aimT-dt);ai();
+ let lim=900;BR.forEach(b=>{if(b.hp>0)lim=Math.min(lim,b.x-50)});FR.forEach(f=>{if(f.t>0)lim=Math.min(lim,f.x-62)});
+ const mv=adv&&fx<lim;fa=cl(fa+((mv?3:0)+(sh>0?7:0)-(mv||sh>0?0:5))*dt,0,100);rp-=dt;if(rp<=0){rp=22;am.gas=Math.min(6,am.gas+1);am.molo=Math.min(5,am.molo+1);if(Math.random()<.5)am.barr=Math.min(3,am.barr+1)}am.rock=Math.min(60,am.rock+3*dt);
+ if(rv>0){sp-=dt;if(sp<=0){const y=424+R(0,76);C.push({x:1040,y,ly:y,mor:100,hp:100,v:Math.random()*3|0,st:0,dn:0,sp:Math.random(),tt:R(1,5)});rv--;sp=Math.max(1.6,5-t/40)*(side==='mh'?1:1.6)}}
+ if(mv)fx=Math.min(lim,fx+(sh>0?9:17)*(1-fa/140)*dt);else if(fx>lim)fx=Math.max(lim,fx-30*dt);
+ if(fx>=lim-6)BR.forEach(b=>{if(b.hp>0&&b.x-50<=lim+1)b.hp-=10*dt});
+ S.forEach((s,i)=>{if(s.st===2){s.dn+=dt;return}if(s.st===1){s.x-=95*dt;return}const r=i%9,k=i/9|0;let tx,ty;if(s.sw>0){s.sw-=dt;if(s.sw<=0&&rs>0){rs--;s.v='mhs';s.sd=100}}
+  if(form==='line'){tx=fx-k*38-(r%2)*10;ty=428+r*8.5}else if(form==='wedge'){tx=fx-Math.abs(r-4)*21-k*34;ty=428+r*8.5}else{tx=fx-(i/6|0)*30;ty=438+(i%6)*12.5}
+  if(s.sw>0)tx=fx-210-(i%4)*12;s.x+=(tx-s.x)*Math.min(1,2.6*dt);s.y+=(ty-s.y)*Math.min(1,2.6*dt);s.mor=Math.min(100,s.mor+4*(1-fa/150)*dt);
+  if(s.hp<=0){s.st=2;s.dn=0}else if(s.mor<=0){s.st=1;panic(s,S)}});
+ C.forEach((c,i)=>{if(c.st===2){c.dn+=dt;return}if(c.st===1){c.x+=(70+c.sp*40)*dt;return}
+  const w=surge>0?fx+44+(i%5)*8:fx+120+(i%9)*24,d=w-c.x;c.x+=Math.sign(d)*Math.min(Math.abs(d),(surge>0?85:26+c.sp*14)*dt);c.y+=(c.ly-c.y)*Math.min(1,dt);c.mor=Math.min(100,c.mor+2.2*dt);
+  if(surge>0&&c.x-fx<60){fx=Math.max(fx-9*dt,120);S.forEach(s=>{if(s.st===0&&Math.abs(s.y-c.y)<26&&c.x-s.x<50)s.mor-=2.5*dt*shd(s,8*dt)})}
+  c.tt-=dt;if(c.tt<=0){if(c.mor>30&&c.x-fx<360&&c.x-fx>40){const s=act_(S);if(s.length){const q=s[Math.random()*s.length|0];thr(c.x,c.y,q.x+R(-45,45),q.y+R(-14,14),'rock',70)}}c.tt=R(4,9)}
+  if(c.hp<=0){c.st=2;c.dn=0}else if(c.mor<=0){c.st=1;panic(c,C)}});
+ PJ.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.h+=p.vh*dt;p.vh-=520*dt;p.a+=dt*9;if(p.h<=0){p.dead=1;land(p)}});PJ=PJ.filter(p=>!p.dead);
+ GS.forEach(g=>{g.t-=dt;g.r=Math.min(96,g.r+16*dt);g.x+=wind*dt*.8;const h=a=>Math.abs(a.x-g.x)<g.r&&Math.abs(a.y-g.y)<g.r*.55;C.forEach(c=>{if(c.st<2&&h(c)){c.mor-=6*dt;c.hp-=.6*dt}});S.forEach(s=>{if(s.st<2&&h(s))s.mor-=(sh>0||form==='box'?2:5)*dt})});GS=GS.filter(g=>g.t>0);
+ FR.forEach(f=>{f.t-=dt;[...S,...C].forEach(a=>{if(a.st<2&&Math.abs(a.x-f.x)<f.r&&Math.abs(a.y-f.y)<f.r*.6){const q=a.v==='mhs'?shd(a,20*dt):1;a.hp-=9*dt*q;a.mor-=11*dt*q}});if(Math.random()<dt*28)PT.push({x:f.x+R(-20,20),y:f.y-20,vx:wind*.6+R(-6,6),vy:-R(18,34),l:2.5,m:2.5,c:'62,64,70',r:7})});FR=FR.filter(f=>f.t>0);
+ const gx=fx-190;if(wj.t>0){wj.t-=dt;wat=Math.max(0,wat-26*dt);const x0=gx+120,x1=wj.x+50;C.forEach(c=>{if(c.st<2&&c.x>x0&&c.x<x1){c.x+=150*dt*FM[form].pu;c.mor-=9*dt;c.hp-=1.2*dt}});FR.forEach(f=>{if(f.x>x0&&f.x<x1)f.t-=5*dt});BR.forEach(b=>{if(b.x>x0&&b.x<x1)b.hp-=26*dt});if(wat<=0)wj.t=0}
+ BR=BR.filter(b=>b.hp>0);PT.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.l-=dt});PT=PT.filter(p=>p.l>0).slice(-260);
+ S=S.filter(s=>s.x>-60&&!(s.st===2&&s.dn>4)||s.st===0&&s.x>-60);C=C.filter(c=>c.x<1060&&!(c.st===2&&c.dn>4));
+ const as=act_(S).length,ac=act_(C).length;$('#bs').style.width=as/N0*100+'%';$('#bc').style.width=Math.min(100,ac/60*100)+'%';$('#bf').style.width=fa+'%';$('#ls').textContent='Szakasz '+as+' · pajzsos tartalék '+rs;$('#lc').textContent='Tömeg '+ac+(rv?' +'+rv:'');$('#lf').textContent='Fáradtság '+Math.round(fa);
+ const rm=Math.max(0,TL-t);$('#tm').textContent=Math.floor(rm/60)+':'+String(Math.floor(rm%60)).padStart(2,'0');
+ if(side==='mh'){if(ac<=2&&rv===0)end(1,as,N1-ac);else if(as<=5||t>=TL)end(0,as,N1-ac)}else{if(as<=4)end(1,ac,N0-as);else if(ac+rv<=9||t>=TL)end(0,ac,N0-as)}}
+function end(win,own,kills){over=true;const k='crc2-'+side,sc=win?400+Math.ceil(TL-t)*4+own*12:kills*10;if(sc>sg(k))ss(k,sc);
+ const T={mh:[['Szétoszlatva','A tér kiürült, a szakasz tartotta a vonalat.'],['Megtört a vonal','A szakasz visszavonult, a tömeg a téren maradt.']],cr:[['A szakasz megfutamodott','A vonal széthullott, a tér a tiétek.'],['Szétszórtak titeket','A tömeg szétoszlott, a szakasz előrenyomult.']]}[side][win?0:1];
+ $('#rt').textContent=T[0];$('#rp').textContent=T[1];$('#rv').textContent=sc+' pont · rekord '+sg(k);$('#rs').style.setProperty('--k',side==='mh'?'#7d9a55':'#4f8fd8');$('#end').classList.add('on')}
+function glow(x,y,r,c,a){const g=X.createRadialGradient(x,y,0,x,y,r);g.addColorStop(0,`rgba(${c},${a})`);g.addColorStop(1,`rgba(${c},0)`);X.fillStyle=g;X.fillRect(x-r,y-r,2*r,2*r)}
+function spr(im,x,y,h,flip,a,rot){X.save();X.translate(x,y);X.fillStyle='rgba(0,0,0,.35)';X.beginPath();X.ellipse(0,0,h*.16,5,0,0,7);X.fill();X.globalAlpha=a;if(rot)X.rotate(rot);if(!im.naturalWidth){X.fillStyle='#4c5645';X.fillRect(-8,-h,16,h)}else{const w=h*im.naturalWidth/im.naturalHeight;if(flip)X.scale(-1,1);X.drawImage(im,-w/2,-h,w,h)}X.restore()}
+function draw(){X.drawImage(BG,0,0,W,H);const L=[];S.forEach(s=>L.push([s.y,0,s]));C.forEach(c=>L.push([c.y,1,c]));BR.forEach(b=>L.push([b.y,2,b]));L.push([490,3,0]);PJ.forEach(p=>L.push([p.y,4,p]));L.sort((a,b)=>a[0]-b[0]);
+ for(const [,k,o] of L){
+  if(k===0){const sc=.8+(o.y-424)/250;spr(IM[o.v],o.x,o.y,118*sc,(o.v==='mhs')!==(o.st===1),o.st===2?1-o.dn/4:1,o.st===2?-1.45:0);if(o.v==='mhs'&&o.sd<70&&o.st===0){const cx=o.x+118*sc*.16,cy=o.y-59*sc;X.strokeStyle='rgba(255,255,255,.8)';X.lineWidth=1;X.beginPath();X.moveTo(cx,cy-18);X.lineTo(cx-4,cy-6);X.lineTo(cx+3,cy+4);X.lineTo(cx-2,cy+16);if(o.sd<35){X.moveTo(cx-4,cy-6);X.lineTo(cx-12,cy-2);X.moveTo(cx+3,cy+4);X.lineTo(cx+10,cy+8)}X.stroke()}}
+  else if(k===1){const sc=.8+(o.y-424)/250;spr(IM['tun'+o.v],o.x,o.y,106*sc,o.st===1,o.st===2?1-o.dn/4:1,o.st===2?1.45:0)}
+  else if(k===2){X.save();X.translate(o.x,o.y);X.globalAlpha=.5+.5*o.hp/o.m;X.fillStyle='rgba(0,0,0,.35)';X.beginPath();X.ellipse(0,0,48,6,0,0,7);X.fill();X.fillStyle='#59616b';X.fillRect(-34,-30,68,26);X.fillStyle='#6a5238';[-26,-8,12].forEach((x,i)=>{X.save();X.translate(x,-34);X.rotate(.35-i*.3);X.fillRect(-3,-22,7,44);X.restore()});[-36,-12,14,36].forEach(x=>{X.fillStyle='#15171a';X.beginPath();X.arc(x,-9,11,0,7);X.fill();X.fillStyle='#2b2e33';X.beginPath();X.arc(x,-9,5,0,7);X.fill()});X.restore()}
+  else if(k===3){spr(IM.gidran,fx-190,490,150,true,1,0)}
+  else{X.fillStyle='rgba(0,0,0,.3)';X.beginPath();X.ellipse(o.x,o.y,6,2.5,0,0,7);X.fill();X.save();X.translate(o.x,o.y-o.h);X.rotate(o.a);
+   if(o.type==='rock'){X.fillStyle='#9aa0a6';X.beginPath();X.arc(0,0,3.5,0,7);X.fill()}else if(o.type==='molo'){X.fillStyle='#3f6b4a';X.fillRect(-3,-7,6,14);X.fillStyle='#d9d2b8';X.fillRect(-1.5,-10,3,4)}else{X.fillStyle='#6b7480';X.fillRect(-3,-6,6,12)}X.restore();
+   if(o.type==='molo')glow(o.x,o.y-o.h-8,18,'255,150,40',.85);else if(o.type==='gas')glow(o.x-8,o.y-o.h,14,'200,210,170',.5)}}
+ X.globalCompositeOperation='lighter';FR.forEach(f=>{const a=Math.min(1,f.t/1.5);for(let i=0;i<6;i++){const hh=18+14*Math.abs(Math.sin(tt*7+i));glow(f.x+Math.sin(tt*9+i*2)*f.r*.45,f.y-hh*.5-4,22+i*2,i%2?'255,170,50':'255,90,25',.55*a)}});X.globalCompositeOperation='source-over';
+ GS.forEach(g=>{for(let i=0;i<5;i++)glow(g.x+Math.cos(i*1.3+tt*.4)*g.r*.5,g.y-25+Math.sin(i*1.9+tt*.5)*g.r*.2,g.r*.65,'184,198,150',.34*Math.min(1,g.t/3))});
+ PT.forEach(p=>{X.globalAlpha=p.l/p.m*.45;X.fillStyle=`rgb(${p.c})`;X.beginPath();X.arc(p.x,p.y,p.r*(1.6-p.l/p.m),0,7);X.fill()});X.globalAlpha=1;
+ if(wj.t>0){const x0=fx-70,y0=486-118,x1=wj.x,y1=470;for(let i=0;i<26;i++){const u=i/25,j=Math.sin(tt*30+i)*2;X.fillStyle=`rgba(200,225,255,${.5-u*.25})`;X.beginPath();X.arc(x0+(x1-x0)*u,y0+(y1-y0)*u-70*Math.sin(Math.PI*u)+j,2.5+u*4,0,7);X.fill()}}
+ X.fillStyle='rgba(8,18,40,.2)';X.fillRect(0,0,W,H);const v=X.createRadialGradient(W/2,H/2,H*.45,W/2,H/2,H*1.05);v.addColorStop(0,'rgba(0,0,0,0)');v.addColorStop(1,'rgba(0,0,0,.5)');X.fillStyle=v;X.fillRect(0,0,W,H);
+ if(on&&!over){const ax=aimX();X.strokeStyle='rgba(255,255,255,.7)';X.lineWidth=2;X.setLineDash([6,5]);X.beginPath();X.ellipse(ax,505,20,6,0,0,7);X.stroke();X.setLineDash([])}}
+function hud(){document.querySelectorAll('.ab').forEach(e=>{const k=e.dataset.k,b=e.querySelector('b');let p=CD[k]?cd[k]/CD[k]:0;
+ if(k==='adv')b.textContent=adv?'⏸ Állj':'▶ Előre';else if(k==='form')b.textContent='Alakzat: '+FM[form].n;else if(k==='water'){b.textContent='Vízágyú '+Math.round(wat)+'%';p=1-wat/100}else if(k in am){b.textContent=({gas:'Könnygáz',molo:'Molotov',barr:'Barikád',rock:'Kő'})[k]+' '+Math.floor(am[k]);if(am[k]<1)p=1}e.style.setProperty('--p',p>0?Math.min(1,p):0)})}
+function loop(now){const dt=Math.min((now-last)/1000,.04);last=now;tt+=dt;if(on){if(!over)up(dt);draw();hud()}requestAnimationFrame(loop)}
+cv.addEventListener('pointerdown',e=>{const r=cv.getBoundingClientRect();aim=(e.clientX-r.left)/r.width*W;aimT=5});
+addEventListener('keydown',e=>{if(!on)return;const i=e.code==='Space'?0:+e.key-1;if(e.code==='Space')e.preventDefault();const b=BT[side][i];if(b)act(b[0])});
+requestAnimationFrame(loop);
+if('serviceWorker'in navigator&&location.protocol!=='file:')addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+return{start,home,side:()=>side}})();
+</script></body></html>
