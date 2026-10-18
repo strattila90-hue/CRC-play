@@ -1,0 +1,11 @@
+{
+  "name": "crc-play",
+  "version": "1.0.0",
+  "description": "CRC PLAY – Magyar Honvédség Crowd and Riot Control PWA",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve ."
+  },
+  "keywords": ["crc", "riot-control", "hungarian", "gidran", "pwa"],
+  "license": "MIT"
+}

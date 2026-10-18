@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1e40af">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/ikon-192.png">
+  <title>CRC PLAY</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; background: #0f172a; color: #fff; font-family: system-ui, -apple-system, sans-serif; touch-action: manipulation; overflow: hidden; }
+    #game { width: 100%; height: 100%; display: flex; flex-direction: column; }
+    canvas { width: 100%; height: 100%; flex: 1; background: #1a202c; display: block; touch-action: none; }
+    .ui { padding: 6px 8px; background: #1e293b; display: flex; flex-wrap: wrap; gap: 5px; max-height: 35vh; overflow-y: auto; }
+    button { padding: 10px 12px; background: #334155; color: white; border: none; border-radius: 8px; font-size: 13px; min-height: 40px; }
+    button:active { transform: scale(0.97); }
+    button.active { background: #1e40af; }
+    .log { font-size: 11px; opacity: 0.85; padding: 4px 8px; max-height: 50px; overflow: hidden; background: #0f172a; }
+    .menu { text-align: center; padding: 20px 16px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+    .menu button { font-size: 18px; padding: 16px 32px; margin: 8px; min-width: 180px; }
+    .exit-btn { position: absolute; top: 8px; right: 8px; background: #b91c1c; z-index: 10; padding: 8px 12px; font-size: 13px; }
+    #end { position: relative; }
+    @media (max-width: 480px) {
+      button { font-size: 12px; padding: 8px 10px; }
+      .menu button { font-size: 16px; padding: 14px 24px; }
+    }
+    @media (min-width: 900px) {
+      .ui { justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+  <div id="game">
+    <div id="menu" class="menu">
+      <h1 style="font-size:2.2rem;margin-bottom:8px">CRC PLAY</h1>
+      <p style="margin-bottom:20px;opacity:0.8">Magyar Honvédség + GIDRAN</p>
+      <button onclick="start('oszlató')">Oszlató (MH)</button>
+      <button onclick="start('tüntető')" style="background:#b91c1c">Tüntető</button>
+      <button onclick="refreshLeaderboard()" style="background:#0f766e;margin-top:16px">Ranglista frissítése</button>
+      <div id="menuBoard" style="margin-top:16px;max-height:30vh;overflow-y:auto;width:100%;max-width:400px"></div>
+    </div>
+
+    <canvas id="c" width="800" height="400" style="display:none"></canvas>
+    <button id="exitBtn" class="exit-btn" style="display:none" onclick="exitGame()">Kilépés</button>
+    <div id="controls" class="ui" style="display:none"></div>
+    <div id="log" class="log" style="display:none"></div>
+
+    <div id="end" class="menu" style="display:none">
+      <h2 id="scoreText"></h2>
+      <input id="name" placeholder="Név" style="padding:12px;margin:10px;border-radius:6px;border:none;width:80%;max-width:240px">
+      <button onclick="save()">Mentés ranglistára</button>
+      <div id="board" style="margin-top:12px"></div>
+      <button onclick="backToMenu()" style="margin-top:10px">Vissza a menübe</button>
+    </div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+  <script src="/firebase-config.js"></script>
+  <script>
+    let side, formation = 'vonal', command = '', score = 0, running = false;
+    let squad = [], protesters = [], molotovs = [], gidran = {x:30,y:200,health:300};
+    let gasActive = false, waterActive = false, logs = [];
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+
+    // Jobb grafikák
+    const images = {};
+    function loadImages() {
+      const list = ['soldier_shield', 'gidran'];
+      list.forEach(name => {
+        const img = new Image();
+        img.src = '/images/' + name + '.jpg';
+        images[name] = img;
+      });
+    }
+    loadImages();
+
+    function resizeCanvas() {
+      // Egyszerű, megbízható méret
+      const parent = canvas.parentElement;
+      const available = parent.clientHeight - 180; // hely a gomboknak
+      canvas.style.height = Math.max(220, available) + 'px';
+      canvas.width = 800;
+      canvas.height = 400;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+    window.addEventListener('resize', () => { if (running) resizeCanvas(); });
+
+    function log(msg) {
+      logs.unshift(msg);
+      const el = document.getElementById('log');
+      if (el) el.innerHTML = logs.slice(0, 5).join('<br>');
+    }
+
+    function start(s) {
+      side = s;
+      document.getElementById('menu').style.display = 'none';
+      document.getElementById('end').style.display = 'none';
+      canvas.style.display = 'block';
+      document.getElementById('controls').style.display = 'flex';
+      document.getElementById('log').style.display = 'block';
+      document.getElementById('exitBtn').style.display = 'block';
+      setTimeout(() => {
+        resizeCanvas();
+        init();
+        running = true;
+        loop();
+      }, 100);
+    }
+
+    function exitGame() {
+      if (!confirm('Biztosan kilépsz a játékból?')) return;
+      running = false;
+      backToMenu();
+    }
+
+    function backToMenu() {
+      running = false;
+      document.getElementById('menu').style.display = 'flex';
+      canvas.style.display = 'none';
+      document.getElementById('controls').style.display = 'none';
+      document.getElementById('log').style.display = 'none';
+      document.getElementById('exitBtn').style.display = 'none';
+      document.getElementById('end').style.display = 'none';
+      refreshLeaderboard();
+    }
+
+    function init() {
+      gidran = {x: 30, y: 180, health: 300};
+      squad = [
+        {role:'PK',x:160,y:220,h:100,shield:true,mask:false},
+        {role:'SNIPER',x:210,y:220,h:100,shield:false,mask:false},
+        {role:'MG',x:250,y:220,h:100,shield:false,mask:false},
+        {role:'MG',x:290,y:220,h:100,shield:false,mask:false},
+        {role:'MG',x:330,y:220,h:100,shield:false,mask:false},
+        {role:'MG',x:370,y:220,h:100,shield:false,mask:false},
+        {role:'SHOTGUN',x:410,y:220,h:100,shield:false,mask:false},
+        {role:'SHOTGUN',x:450,y:220,h:100,shield:false,mask:false},
+        {role:'EXT',x:490,y:220,h:100,shield:true,mask:false},
+        {role:'EXT',x:530,y:220,h:100,shield:true,mask:false}
+      ];
+      protesters = Array.from({length:12}, (_,i) => ({x:620 + i*22, y:230, h:60}));
+      molotovs = [];
+      score = 0;
+      gasActive = false;
+      waterActive = false;
+      buildControls();
+      applyFormation();
+    }
+
+    function applyFormation() {
+      const base = gidran.x + 140;
+      squad.forEach((s,i) => {
+        if (formation === 'doboz') { s.x = base + (i%5)*38; s.y = 200 + Math.floor(i/5)*30; }
+        else if (formation === 'ék') { s.x = base + i*26; s.y = 220 - Math.abs(i-4.5)*5; }
+        else if (formation === 'oszlop') { s.x = base + i*16; s.y = 220; }
+        else if (formation === 'nyitott') { s.x = base + i*42; s.y = 220; }
+        else { s.x = base + i*34; s.y = 220; }
+      });
+    }
+
+    function buildControls() {
+      const forms = ['doboz','ék','oszlop','vonal','nyitott','zárt'];
+      const cmds = ['állj','előre','pajzsot fel','pajzsot le','gázálarcot fel','gázálarcot le','fegyver!','koktél','jármű','vízágyú'];
+      let html = forms.map(f => `<button onclick="setForm('${f}')">${f}</button>`).join('');
+      html += '<br style="width:100%">' + cmds.map(c => `<button onclick="setCmd('${c}')">${c}</button>`).join('');
+      document.getElementById('controls').innerHTML = html;
+    }
+
+    function setForm(f) { formation = f; applyFormation(); log('Alakzat: ' + f); }
+    function setCmd(c) { command = c; log('Parancs: ' + c); }
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Háttér – mindig látható
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#334155';
+      ctx.fillRect(0, 280, canvas.width, 120);
+
+      // GIDRAN – mindig rajzolódik
+      ctx.fillStyle = '#4d7c0f';
+      ctx.fillRect(gidran.x, gidran.y, 130, 60);
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 13px sans-serif';
+      ctx.fillText('GIDRAN', gidran.x + 35, gidran.y + 35);
+
+      if (waterActive) {
+        ctx.strokeStyle = 'rgba(56,189,248,0.7)';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(gidran.x + 120, gidran.y + 20);
+        ctx.lineTo(gidran.x + 240, gidran.y);
+        ctx.stroke();
+      }
+
+      // Katonák – mindig láthatók
+      squad.forEach(s => {
+        if (s.h <= 0) return;
+        ctx.fillStyle = s.role === 'EXT' ? '#dc2626' : '#2563eb';
+        ctx.fillRect(s.x, s.y, 32, 60);
+        if (s.shield) {
+          ctx.fillStyle = 'rgba(191,219,254,0.7)';
+          ctx.fillRect(s.x - 10, s.y - 5, 14, 65);
+        }
+        if (s.mask) {
+          ctx.fillStyle = 'rgba(0,0,0,0.5)';
+          ctx.fillRect(s.x + 6, s.y + 5, 18, 14);
+        }
+        // Health
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(s.x, s.y - 7, 32, 3);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(s.x, s.y - 7, 32 * (s.h / 100), 3);
+      });
+
+      // Tüntetők
+      protesters.forEach(p => {
+        if (p.h <= 0) return;
+        ctx.fillStyle = '#b91c1c';
+        ctx.fillRect(p.x, p.y, 24, 50);
+      });
+
+      // Molotovok
+      molotovs.forEach(m => {
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Felirat
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 15px sans-serif';
+      ctx.fillText('CRC PLAY  |  ' + formation.toUpperCase() + '  |  ' + Math.floor(score) + ' pont', 15, 25);
+      if (gasActive) ctx.fillText('GÁZÁLARC FEL', 15, 48);
+      if (waterActive) ctx.fillText('VÍZÁGYÚ', 15, 68);
+    }
+
+    function update() {
+      if (command === 'előre') { squad.forEach(s => s.x += 0.5); gidran.x += 0.4; }
+      if (command === 'jármű') { gidran.x += 0.6; }
+      if (command === 'vízágyú') { waterActive = !waterActive; command = ''; }
+      if (command === 'pajzsot fel') squad.forEach(s => s.shield = true);
+      if (command === 'pajzsot le') squad.forEach(s => s.shield = false);
+      if (command === 'gázálarcot fel') { squad.forEach(s => s.mask = true); gasActive = true; }
+      if (command === 'gázálarcot le') { squad.forEach(s => s.mask = false); gasActive = false; }
+      if (command === 'koktél') {
+        squad.forEach(s => s.h -= s.shield ? 0.3 : 1.2);
+        log('Koktél! Pajzs + oltás');
+        command = '';
+      }
+
+      if (waterActive) {
+        protesters.forEach(p => { if (p.h > 0 && p.x < gidran.x + 270) { p.h -= 0.5; p.x += 0.6; } });
+      }
+
+      protesters.forEach(p => {
+        if (p.h <= 0) return;
+        p.x -= 0.2;
+        if (Math.random() < 0.006) molotovs.push({x: p.x, y: p.y + 15, vx: -2.2, vy: -1.2});
+      });
+
+      molotovs.forEach(m => { m.x += m.vx; m.y += m.vy; m.vy += 0.06; });
+      molotovs = molotovs.filter(m => m.y < 340 && m.x > 0);
+
+      squad.forEach(s => {
+        if (s.h <= 0) return;
+        protesters.forEach(p => {
+          if (p.h > 0 && Math.abs(s.x - p.x) < 30) {
+            p.h -= (s.role === 'MG' || s.role === 'SHOTGUN') ? 0.7 : 0.25;
+            s.h -= 0.15;
+          }
+        });
+        molotovs.forEach(m => {
+          if (Math.abs(m.x - s.x) < 16 && Math.abs(m.y - s.y) < 30) {
+            s.h -= s.shield ? 0.4 : 1.6;
+            m.y = 999;
+          }
+        });
+      });
+
+      const as = squad.filter(s => s.h > 0).length;
+      const ap = protesters.filter(p => p.h > 0).length;
+      score = (12 - ap) * 12 + as * 3;
+      if (as === 0 || ap === 0) endGame();
+    }
+
+    function loop() {
+      if (!running) return;
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    function endGame() {
+      running = false;
+      document.getElementById('exitBtn').style.display = 'none';
+      document.getElementById('scoreText').textContent = 'Vége! Pont: ' + Math.floor(score);
+      document.getElementById('end').style.display = 'flex';
+      loadBoard('board');
+    }
+
+    function firebaseReady() {
+      return window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey && window.FIREBASE_CONFIG.apiKey !== 'YOUR_API_KEY';
+    }
+
+    async function save() {
+      const name = document.getElementById('name').value.trim();
+      if (!name) { alert('Adj meg egy nevet!'); return; }
+      if (!firebaseReady()) { alert('Firebase config nincs beállítva a firebase-config.js fájlban.'); return; }
+      try {
+        if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
+        const db = firebase.firestore();
+        await db.collection('scores').add({
+          name,
+          score: Math.floor(score),
+          side,
+          timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        alert('Mentve!');
+        loadBoard('board');
+      } catch (e) {
+        alert('Mentési hiba: ' + e.message + '\nEllenőrizd a Firestore szabályokat.');
+      }
+    }
+
+    async function loadBoard(targetId) {
+      const el = document.getElementById(targetId);
+      if (!el) return;
+      if (!firebaseReady()) {
+        el.innerHTML = '<p style="opacity:0.6;font-size:13px">Firebase nincs beállítva</p>';
+        return;
+      }
+      try {
+        if (!firebase.apps.length) firebase.initializeApp(window.FIREBASE_CONFIG);
+        const db = firebase.firestore();
+        const snap = await db.collection('scores').orderBy('score', 'desc').limit(10).get();
+        if (snap.empty) {
+          el.innerHTML = '<p style="opacity:0.6">Még nincs eredmény</p>';
+          return;
+        }
+        let html = '<ol style="text-align:left;display:inline-block;font-size:14px">';
+        snap.forEach(d => {
+          const e = d.data();
+          html += `<li>${e.name} — ${e.score} (${e.side || ''})</li>`;
+        });
+        html += '</ol>';
+        el.innerHTML = html;
+      } catch (e) {
+        el.innerHTML = '<p style="color:#f87171;font-size:13px">Ranglista hiba: ' + e.message + '</p>';
+      }
+    }
+
+    function refreshLeaderboard() {
+      loadBoard('menuBoard');
+    }
+
+    // Initial load
+    setTimeout(refreshLeaderboard, 500);
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /scores/{scoreId} {
+      // Mindenki olvashatja a ranglistát
+      allow read: if true;
+
+      // Új pontszám mentése csak érvényes adatokkal
+      allow create: if request.resource.data.keys().hasAll(['name', 'score', 'side'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() < 50
+        && request.resource.data.score is number
+        && request.resource.data.score >= 0
+        && request.resource.data.score <= 100000
+        && request.resource.data.side is string;
+
+      // Módosítás és törlés tiltva
+      allow update, delete: if false;
+    }
+  }
+}
